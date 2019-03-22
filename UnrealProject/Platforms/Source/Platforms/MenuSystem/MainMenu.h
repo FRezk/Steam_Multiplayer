@@ -15,6 +15,11 @@ class PLATFORMS_API UMainMenu : public UMenuWidget
 {
 	GENERATED_BODY()
 
+public:
+	UMainMenu(const FObjectInitializer & ObjectInitializer);
+	void SetServerList(TArray<FString> names);
+	void setSelectedIndex(uint32 index);
+
 private:
 
 	UPROPERTY(meta = (BindWidget))
@@ -42,7 +47,9 @@ private:
 	class UButton* jJoin;
 
 	UPROPERTY(meta = (BindWidget))
-	class UEditableTextBox* ipAddress;
+	class UPanelWidget* ServerList;
+
+	TSubclassOf<class UUserWidget> serverRowClass;
 
 	UFUNCTION()
 	void hostServer();
@@ -58,6 +65,8 @@ private:
 
 	UFUNCTION()
 	void exit();
+
+	TOptional<uint32> selectedIndex;
 
 protected:
 	virtual bool Initialize() override;

@@ -6,10 +6,15 @@
 #include "GameFramework/PlayerController.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Blueprint/UserWidget.h"
-
+#include "OnlineSessionSettings.h"
+#include "OnlineSessionInterface.h"
+#include "OnlineSubsystem.h"
 #include "PlatformTrigger.h"
+#include "MenuSystem/ServerRow.h"
 #include "MenuSystem/MainMenu.h"
 #include "MenuSystem/MenuWidget.h"
+
+const static FName SESSION_NAME = TEXT("My Game Session");
 
 UPlatformsGameInstance::UPlatformsGameInstance(const FObjectInitializer & ObjectInitializer)
 {
@@ -24,10 +29,24 @@ UPlatformsGameInstance::UPlatformsGameInstance(const FObjectInitializer & Object
 
 void UPlatformsGameInstance::Init()
 {
-	UE_LOG(LogTemp, Warning, TEXT("Found class %s"), *menuClass->GetName());
+	IOnlineSubsystem* onlineSubsystem = IOnlineSubsystem::Get();
+	if (onlineSubsystem != nullptr) {
+		UE_LOG(LogTemp, Warning, TEXT("Found online subsystem: %s"), *onlineSubsystem->GetSubsystemName().ToString());
+		sessionInterface = onlineSubsystem->GetSessionInterface();
+		if (sessionInterface.IsValid()) {
+			sessionInterface->OnCreateSessionCompleteDelegates.AddUObject(this, &UPlatformsGameInstance::OnCreateSessionComplete);
+			sessionInterface->OnDestroySessionCompleteDelegates.AddUObject(this, &UPlatformsGameInstance::OnDestroySessionComplete);
+			sessionInterface->OnFindSessionsCompleteDelegates.AddUObject(this, &UPlatformsGameInstance::OnFindSessionsComplete);
+			sessionInterface->OnJoinSessionCompleteDelegates.AddUObject(this, &UPlatformsGameInstance::OnJoinSessionComplete);
+		}
+	}
+	else {
+		UE_LOG(LogTemp, Warning, TEXT("Online Subsystem null!!"));
+	}
+	
 }
 
-void UPlatformsGameInstance::LoadMenu()
+void UPlatformsGameInstance::LoadMenuWidget()
 {
 	if (!ensure(menuClass != nullptr)) return;
 	menu = CreateWidget<UMainMenu>(this, menuClass);
@@ -52,6 +71,55 @@ void UPlatformsGameInstance::InGameLoadMenu()
 
 void UPlatformsGameInstance::Host()
 {
+	if (sessionInterface.IsValid()) 
+	{
+		auto existingSession = sessionInterface->GetNamedSession(SESSION_NAME);
+		if (existingSession != nullptr) 
+		{
+			sessionInterface->DestroySession(SESSION_NAME);
+		}
+		else 
+		{
+			CreateSession();
+		}
+	}
+}
+
+	// Create Sessions
+void UPlatformsGameInstance::CreateSession()
+{
+	if (sessionInterface.IsValid())
+	{
+		FOnlineSessionSettings sessionSettings;
+		sessionSettings.bIsLANMatch = false;
+		sessionSettings.NumPublicConnections = 5;
+		sessionSettings.bShouldAdvertise = true;
+		sessionSettings.bUsesPresence = true;
+		sessionInterface->CreateSession(0, SESSION_NAME, sessionSettings);
+	}
+}
+
+	// Find sessions
+void UPlatformsGameInstance::RefreshServerList()
+{
+	sessionSearch = MakeShareable(new FOnlineSessionSearch());
+	if (sessionSearch.IsValid())
+	{
+		sessionSearch->MaxSearchResults = 100;
+		sessionSearch->QuerySettings.Set(SEARCH_PRESENCE, true, EOnlineComparisonOp::Equals);
+		UE_LOG(LogTemp, Warning, TEXT("Looking for sessions..."));
+		sessionInterface->FindSessions(0, sessionSearch.ToSharedRef());
+	}
+}
+
+void UPlatformsGameInstance::OnCreateSessionComplete(FName SessionName, bool Success)
+{
+	if (!Success)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Unable to create the session."));
+		return;
+	}
+
 	if (menu != nullptr)
 	{
 		menu->teardown();
@@ -68,11 +136,51 @@ void UPlatformsGameInstance::Host()
 
 }
 
-void UPlatformsGameInstance::Join(const FString& address)
+void UPlatformsGameInstance::OnDestroySessionComplete(FName SessionName, bool Success)
 {
+	if (Success)
+	{
+		CreateSession();
+	}
+}
+
+void UPlatformsGameInstance::OnFindSessionsComplete(bool Success)
+{
+
+	if (Success && sessionSearch.IsValid() && menu != nullptr) {
+		TArray<FString> names;
+		for (const FOnlineSessionSearchResult& session : sessionSearch->SearchResults) {
+			names.Add(session.GetSessionIdStr());
+			UE_LOG(LogTemp, Warning, TEXT("Found session %s"), *session.GetSessionIdStr());
+		}
+		menu->SetServerList(names);
+	}
+	
+}
+
+void UPlatformsGameInstance::Join(uint32 index)
+{
+	if (!sessionInterface.IsValid()) return;
+	if (!sessionSearch.IsValid()) return;
+
 	if (menu != nullptr)
 	{
 		menu->teardown();
+	}
+
+	sessionInterface->JoinSession(0, SESSION_NAME, sessionSearch->SearchResults[index]);
+
+	
+}
+
+void UPlatformsGameInstance::OnJoinSessionComplete(FName sessionName, EOnJoinSessionCompleteResult::Type result)
+{
+	if (!sessionInterface.IsValid()) return;
+
+	FString address;
+	if (!sessionInterface->GetResolvedConnectString(SESSION_NAME, address)) {
+		UE_LOG(LogTemp, Warning, TEXT("Could not retrieve connection."));
+		return;
 	}
 
 	UEngine* engine = GetEngine();
@@ -84,6 +192,7 @@ void UPlatformsGameInstance::Join(const FString& address)
 	if (!ensure(playerController != nullptr)) return;
 
 	playerController->ClientTravel(*address, ETravelType::TRAVEL_Absolute);
+
 }
 
 void UPlatformsGameInstance::LoadMainMenu()
